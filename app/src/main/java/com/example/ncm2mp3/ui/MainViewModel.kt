@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 data class FileConversionState(
     val uri: Uri,
@@ -102,12 +103,17 @@ class MainViewModel(context: Context) : ViewModel() {
                     }
                 }
 
-                // 设置输出目录为外部存储的music文件夹
-                val outputDir = File(Environment.getExternalStorageDirectory(), "music")
+                // 设置输出目录为外部存储的 download/netease/music 文件夹
+                val outputDir = File(Environment.getExternalStorageDirectory(), "download/netease/music")
                 Log.d(TAG, "Output directory: ${outputDir.absolutePath}")
+                
+                // 递归创建目录
                 if (!outputDir.exists()) {
                     val created = outputDir.mkdirs()
                     Log.d(TAG, "Created output directory: $created")
+                    if (!created) {
+                        throw IOException("Failed to create output directory: ${outputDir.absolutePath}")
+                    }
                 }
 
                 // 检查文件权限

@@ -237,6 +237,16 @@ fun MainScreen(viewModel: MainViewModel) {
                         
                         Spacer(modifier = Modifier.height(8.dp))
                         
+                        Button(
+                            onClick = { viewModel.convertFiles(context) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = uiState.selectedFiles.any { !it.isConverting && it.result == null }
+                        ) {
+                            Text("开始转换")
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
                         LazyColumn(
                             modifier = Modifier.weight(1f, false),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -244,16 +254,6 @@ fun MainScreen(viewModel: MainViewModel) {
                             items(uiState.selectedFiles) { fileState ->
                                 FileConversionItem(fileState)
                             }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        Button(
-                            onClick = { viewModel.convertFiles(context) },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = uiState.selectedFiles.any { !it.isConverting && it.result == null }
-                        ) {
-                            Text("开始转换")
                         }
                     }
                 }
