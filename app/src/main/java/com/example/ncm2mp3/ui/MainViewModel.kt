@@ -14,10 +14,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 
-data class MainUiState(
+data class FileConversionState(
+    val uri: Uri,
+    val fileName: String,
     val isConverting: Boolean = false,
-    val conversionResult: ConversionResult? = null,
-    val selectedFile: Uri? = null,
+    val result: ConversionResult? = null
+)
+
+data class MainUiState(
+    val selectedFiles: List<FileConversionState> = emptyList(),
     val hasStoragePermission: Boolean = false
 )
 
@@ -35,22 +40,62 @@ class MainViewModel(context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(hasStoragePermission = hasPermission)
     }
 
-    fun updateSelectedFile(uri: Uri?) {
-        Log.d(TAG, "Selected file updated: $uri")
-        _uiState.value = _uiState.value.copy(selectedFile = uri)
+    fun addFiles(files: List<Pair<Uri, String>>) {
+        val currentFiles = _uiState.value.selectedFiles
+        
+        // 过滤掉已经存在的文件
+        val duplicateFiles = files.filter { (_, fileName) ->
+            currentFiles.any { it.fileName == fileName }
+        }
+        
+        val newFiles = files.filter { (_, fileName) ->
+            !currentFiles.any { it.fileName == fileName }
+        }.map { (uri, fileName) ->
+            FileConversionState(uri = uri, fileName = fileName)
+        }
+        
+        if (newFiles.isNotEmpty()) {
+            _uiState.value = _uiState.value.copy(
+                selectedFiles = _uiState.value.selectedFiles + newFiles
+            )
+        }
+        
+        // 返回重复文件的数量，以便在UI中显示提示
+        if (duplicateFiles.isNotEmpty()) {
+            Log.w(TAG, "Duplicate files found: ${duplicateFiles.map { it.second }}")
+        }
     }
 
-    fun convertFile(context: Context, inputUri: Uri) {
+    fun clearFiles() {
+        _uiState.value = _uiState.value.copy(selectedFiles = emptyList())
+    }
+
+    fun convertFiles(context: Context) {
+        val files = _uiState.value.selectedFiles
+        files.forEachIndexed { index, file ->
+            if (!file.isConverting && file.result == null) {
+                convertSingleFile(context, file, index)
+            }
+        }
+    }
+
+    private fun convertSingleFile(context: Context, fileState: FileConversionState, index: Int) {
         viewModelScope.launch {
-            Log.d(TAG, "Starting file conversion process...")
-            _uiState.value = _uiState.value.copy(isConverting = true)
+            Log.d(TAG, "Starting file conversion process for ${fileState.fileName}...")
+            
+            // 更新文件状态为正在转换
+            updateFileState(index) { it.copy(isConverting = true) }
             
             try {
+                // 获取不带后缀的文件名
+                val baseFileName = fileState.fileName.removeSuffix(".ncm")
+                Log.d(TAG, "Base file name: $baseFileName")
+                
                 // 创建临时文件
-                val inputFile = File(context.cacheDir, "temp.ncm")
+                val inputFile = File(context.cacheDir, "temp_${index}.ncm")
                 Log.d(TAG, "Creating temporary file: ${inputFile.absolutePath}")
                 
-                context.contentResolver.openInputStream(inputUri)?.use { input ->
+                context.contentResolver.openInputStream(fileState.uri)?.use { input ->
                     inputFile.outputStream().use { output ->
                         val bytesCopied = input.copyTo(output)
                         Log.d(TAG, "Copied $bytesCopied bytes to temporary file")
@@ -72,18 +117,20 @@ class MainViewModel(context: Context) : ViewModel() {
                 Log.d(TAG, "Output directory exists: ${outputDir.exists()}")
                 Log.d(TAG, "Output directory writable: ${outputDir.canWrite()}")
 
-                // 转换文件
-                Log.d(TAG, "Converting file...")
+                // 转换文件，传入期望的输出文件名（不带后缀）
+                Log.d(TAG, "Converting file with output name: $baseFileName")
                 val result = repository.convertNcmFile(
                     inputPath = inputFile.absolutePath,
-                    outputFolder = outputDir.absolutePath
+                    outputFolder = outputDir.absolutePath,
+                    outputFileName = baseFileName
                 )
                 Log.d(TAG, "Conversion completed with result: $result")
 
-                _uiState.value = _uiState.value.copy(
+                // 更新文件状态
+                updateFileState(index) { it.copy(
                     isConverting = false,
-                    conversionResult = result
-                )
+                    result = result
+                )}
 
                 // 清理临时文件
                 val deleted = inputFile.delete()
@@ -91,13 +138,62 @@ class MainViewModel(context: Context) : ViewModel() {
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Error during conversion", e)
-                _uiState.value = _uiState.value.copy(
+                updateFileState(index) { it.copy(
                     isConverting = false,
-                    conversionResult = ConversionResult(
+                    result = ConversionResult(
                         success = false,
                         error = e.message ?: "Unknown error occurred"
                     )
-                )
+                )}
+            }
+        }
+    }
+
+    private fun updateFileState(index: Int, update: (FileConversionState) -> FileConversionState) {
+        val currentFiles = _uiState.value.selectedFiles.toMutableList()
+        if (index < currentFiles.size) {
+            currentFiles[index] = update(currentFiles[index])
+            _uiState.value = _uiState.value.copy(selectedFiles = currentFiles)
+        }
+    }
+
+    fun scanNcmFiles(context: Context) {
+        viewModelScope.launch {
+            Log.d(TAG, "Starting NCM files scan...")
+            
+            val scanDirs = listOf(
+                File(Environment.getExternalStorageDirectory(), "download"),
+                File(Environment.getExternalStorageDirectory(), "netease"),
+                File(Environment.getExternalStorageDirectory(), "cloudmusic")
+            )
+            
+            val ncmFiles = mutableListOf<Pair<Uri, String>>()
+            
+            scanDirs.forEach { dir ->
+                if (dir.exists() && dir.isDirectory) {
+                    Log.d(TAG, "Scanning directory: ${dir.absolutePath}")
+                    dir.walk()
+                        .filter { it.isFile && it.name.endsWith(".ncm", ignoreCase = true) }
+                        .forEach { file ->
+                            try {
+                                // 将File转换为Uri
+                                val uri = Uri.fromFile(file)
+                                Log.d(TAG, "Found NCM file: ${file.name} at ${file.absolutePath}")
+                                ncmFiles.add(uri to file.name)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error processing file: ${file.absolutePath}", e)
+                            }
+                        }
+                } else {
+                    Log.d(TAG, "Directory does not exist: ${dir.absolutePath}")
+                }
+            }
+            
+            if (ncmFiles.isNotEmpty()) {
+                Log.d(TAG, "Found ${ncmFiles.size} NCM files")
+                addFiles(ncmFiles)
+            } else {
+                Log.d(TAG, "No NCM files found")
             }
         }
     }

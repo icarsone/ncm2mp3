@@ -14,6 +14,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,7 +37,7 @@ import androidx.activity.viewModels
 import androidx.lifecycle.ViewModelProvider
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: MainViewModel by viewModels {
+    val viewModel: MainViewModel by viewModels {
         object : ViewModelProvider.Factory {
             override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
                 return MainViewModel(applicationContext) as T
@@ -112,11 +119,10 @@ fun MainScreen(viewModel: MainViewModel) {
         }
     )
 
-    val filePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent(),
-        onResult = { uri: Uri? ->
-            uri?.let {
-                // 验证文件是否为NCM文件
+    val multipleFilePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris: List<Uri> ->
+            val validFiles = uris.mapNotNull { uri ->
                 val fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
                     cursor.moveToFirst()
@@ -124,11 +130,36 @@ fun MainScreen(viewModel: MainViewModel) {
                 } ?: ""
 
                 if (fileName.endsWith(".ncm", ignoreCase = true)) {
-                    viewModel.updateSelectedFile(it)
-                    viewModel.convertFile(context, it)
+                    uri to fileName
                 } else {
-                    Toast.makeText(context, "请选择NCM格式的文件", Toast.LENGTH_SHORT).show()
+                    null
                 }
+            }
+
+            if (validFiles.isNotEmpty()) {
+                // 检查是否有重复文件
+                val duplicateFiles = validFiles.filter { (_, fileName) ->
+                    uiState.selectedFiles.any { it.fileName == fileName }
+                }
+                
+                if (duplicateFiles.isNotEmpty()) {
+                    Toast.makeText(
+                        context,
+                        "已跳过${duplicateFiles.size}个重复文件",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                
+                viewModel.addFiles(validFiles)
+            }
+            
+            val invalidFiles = uris.size - validFiles.size
+            if (invalidFiles > 0) {
+                Toast.makeText(
+                    context,
+                    "已过滤掉${invalidFiles}个非NCM格式的文件",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     )
@@ -157,140 +188,236 @@ fun MainScreen(viewModel: MainViewModel) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             if (!uiState.hasStoragePermission) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            "需要存储权限来转换文件",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                    // Android 11及以上版本
-                                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                        data = Uri.parse("package:${context.packageName}")
-                                    }
-                                    context.startActivity(intent)
-                                } else {
-                                    // Android 10及以下版本
-                                    permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            )
-                        ) {
-                            Text("授予权限")
-                        }
-                    }
-                }
+                StoragePermissionCard(context, permissionLauncher)
             }
             
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+            FileSelectionCard(
+                hasPermission = uiState.hasStoragePermission,
+                onSelectFiles = {
+                    multipleFilePicker.launch(arrayOf("*/*"))
+                },
+                onScanFiles = {
+                    viewModel.scanNcmFiles(context)
+                }
+            )
+
+            if (uiState.selectedFiles.isNotEmpty()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "已选择的文件",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            IconButton(
+                                onClick = { viewModel.clearFiles() }
+                            ) {
+                                Icon(
+                                    Icons.Default.Clear,
+                                    contentDescription = "清除所有文件",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        LazyColumn(
+                            modifier = Modifier.weight(1f, false),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(uiState.selectedFiles) { fileState ->
+                                FileConversionItem(fileState)
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Button(
+                            onClick = { viewModel.convertFiles(context) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = uiState.selectedFiles.any { !it.isConverting && it.result == null }
+                        ) {
+                            Text("开始转换")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun StoragePermissionCard(context: android.content.Context, permissionLauncher: androidx.activity.result.ActivityResultLauncher<String>) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "需要存储权限来转换文件",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    } else {
+                        permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Text("授予权限")
+            }
+        }
+    }
+}
+
+@Composable
+fun FileSelectionCard(
+    hasPermission: Boolean,
+    onSelectFiles: () -> Unit,
+    onScanFiles: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "选择要转换的NCM文件",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onSelectFiles,
+                    enabled = hasPermission,
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Text(
-                        "选择要转换的NCM文件",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 16.dp)
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "添加文件",
+                        modifier = Modifier.size(ButtonDefaults.IconSize)
                     )
-                    Button(
-                        onClick = { filePicker.launch("*/*") },
-                        enabled = uiState.hasStoragePermission && !uiState.isConverting,
+                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                    Text(if (hasPermission) "选择文件" else "请先授予权限")
+                }
+                
+                Button(
+                    onClick = onScanFiles,
+                    enabled = hasPermission,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "扫描文件",
+                        modifier = Modifier.size(ButtonDefaults.IconSize)
+                    )
+                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                    Text("扫描文件")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FileConversionItem(fileState: FileConversionState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                fileState.isConverting -> MaterialTheme.colorScheme.primaryContainer
+                fileState.result?.success == true -> MaterialTheme.colorScheme.primaryContainer
+                fileState.result?.success == false -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surface
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Text(
+                text = fileState.fileName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            
+            when {
+                fileState.isConverting -> {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
                         modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (uiState.hasStoragePermission) "选择NCM文件" else "请先授予权限")
-                    }
-                }
-            }
-
-            if (uiState.isConverting) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     )
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        CircularProgressIndicator()
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "正在转换文件...",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
                 }
-            }
-
-            uiState.conversionResult?.let { result ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (result.success) 
-                            MaterialTheme.colorScheme.primaryContainer
-                        else 
-                            MaterialTheme.colorScheme.errorContainer
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
+                fileState.result != null -> {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (fileState.result.success) {
                         Text(
-                            if (result.success) "转换成功！" else "转换失败",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = if (result.success)
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            else
-                                MaterialTheme.colorScheme.onErrorContainer
+                            "转换成功！",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            style = MaterialTheme.typography.bodySmall
                         )
-                        if (result.success && result.outputPath != null) {
-                            Spacer(modifier = Modifier.height(8.dp))
+                        fileState.result.outputPath?.let { path ->
                             Text(
-                                "文件已保存到：${result.outputPath}",
-                                style = MaterialTheme.typography.bodyMedium,
+                                "保存至：$path",
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                textAlign = TextAlign.Center
+                                style = MaterialTheme.typography.bodySmall
                             )
                         }
-                        if (!result.success && result.error != null) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "错误：${result.error}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                textAlign = TextAlign.Center
-                            )
-                        }
+                    } else {
+                        Text(
+                            "转换失败：${fileState.result.error ?: "未知错误"}",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }

@@ -21,17 +21,26 @@ class NcmRepository(private val context: Context) {
         }
     }
     
-    suspend fun convertNcmFile(inputPath: String, outputFolder: String): ConversionResult = withContext(Dispatchers.IO) {
+    suspend fun convertNcmFile(
+        inputPath: String, 
+        outputFolder: String,
+        outputFileName: String? = null
+    ): ConversionResult = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "Starting file conversion...")
             Log.d(TAG, "Input path: $inputPath")
             Log.d(TAG, "Output folder: $outputFolder")
+            Log.d(TAG, "Output file name: $outputFileName")
             
             val py = Python.getInstance()
             val converter = py.getModule("ncm_converter")
             
             Log.d(TAG, "Calling Python convert_file function...")
-            val pyResult = converter.callAttr("convert_file", inputPath, outputFolder)
+            val pyResult = if (outputFileName != null) {
+                converter.callAttr("convert_file", inputPath, outputFolder, outputFileName)
+            } else {
+                converter.callAttr("convert_file", inputPath, outputFolder)
+            }
             
             // 将PyObject转换为Map并安全地处理类型
             @Suppress("UNCHECKED_CAST")

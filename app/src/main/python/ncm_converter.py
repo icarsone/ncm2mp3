@@ -25,10 +25,11 @@ def create_result_dict(success, output_path=None, format=None, error=None, meta_
         "meta_data": dict(meta_data) if meta_data else None
     }
 
-def convert_file(input_path, output_folder):
+def convert_file(input_path, output_folder, output_filename=None):
     try:
         logger.info(f"Starting conversion of file: {input_path}")
         logger.info(f"Output folder: {output_folder}")
+        logger.info(f"Output filename: {output_filename}")
         
         if not os.path.exists(input_path):
             logger.error(f"Input file does not exist: {input_path}")
@@ -47,8 +48,9 @@ def convert_file(input_path, output_folder):
             logger.error(f"Not a NCM file: {filename}")
             return create_result_dict(False, error="Not a NCM file")
             
-        filename = filename[:-4]
-        logger.info(f"Processing file: {filename}")
+        # 使用自定义文件名或默认文件名（去掉.ncm后缀）
+        base_filename = output_filename if output_filename else filename[:-4]
+        logger.info(f"Using base filename: {base_filename}")
         
         core_key = binascii.a2b_hex('687A4852416D736F356B496E62617857')
         meta_key = binascii.a2b_hex('2331346C6A6B5F215C5D2630553C2728')
@@ -112,7 +114,7 @@ def convert_file(input_path, output_folder):
             image_size = struct.unpack('<I', bytes(f.read(4)))[0]
             image_data = f.read(image_size)
             
-            output_path = os.path.join(output_folder, f'{filename}.{meta_data["format"]}')
+            output_path = os.path.join(output_folder, f'{base_filename}.{meta_data["format"]}')
             logger.info(f"Output path: {output_path}")
             
             logger.debug("Converting file content...")
